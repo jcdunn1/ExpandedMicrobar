@@ -1,25 +1,22 @@
 -- ExpandedMicrobar.lua
 -- Patch 11.2.7
 --
--- Modes:
---   * ElvUI present (ElvUI_MicroBar exists):
---       - Do NOT replace Blizzard/ElvUI layout
---       - Create a unique micro button (ExpandedMicrobarSpellbookButton)
---       - Insert it into _G.MICRO_BUTTONS so ElvUI will position it
---       - Ask ElvUI ActionBars to skin/texture it
+-- Goals:
+--   1) Add a real Spellbook button to the micro menu.
+--   2) Retarget Blizzard PlayerSpellsMicroButton so it behaves as Talents-only.
+--   3) Non-ElvUI: replace Blizzard micro container layout (we do our own).
+--   4) Hide the far-right Customer Support/Web Ticket "?" button.
 --
---   * No ElvUI:
---       - Disable/hide Blizzard micro container layout
---       - Create our own bar anchored where Blizzard’s was
---       - Layout a curated set of micro buttons (no HelpMicroButton)
---       - Add a real Spellbook button with matching chrome + book glyph
---
--- Also:
---   - Retarget PlayerSpellsMicroButton to Talents-only
---   - Hide the far-right Customer Support/Web Ticket "?" (HelpOpenWebTicketButton)
+-- ElvUI support:
+--   - If ElvUI_MicroBar exists, we DO NOT replace layout.
+--   - We create a unique button name (ExpandedMicrobarSpellbookButton)
+--     and insert it into _G.MICRO_BUTTONS for ElvUI positioning.
+--   - We let ElvUI skin the button, but we provide our OWN overlay icon
+--     (prevents sheet-coords conflicts and professions being replaced).
+--   - IMPORTANT: We do NOT run a repeating ticker (avoids recursion/stack overflow).
 
 local SPACING = -5
-local ELVUI_BUTTON_NAME = "ExpandedMicrobarSpellbookButton" -- unique, do NOT use SpellbookMicroButton
+local ELVUI_BUTTON_NAME = "ExpandedMicrobarSpellbookButton" -- never use SpellbookMicroButton
 
 -- Non-ElvUI layout order (left -> right)
 local ORDER = {
@@ -137,7 +134,7 @@ local function ForceTalentsTab()
 end
 
 ----------------------------------------------------------------------
--- Talents button state (prevent losing chrome / prevent selected when spellbook opened)
+-- Talents button state: keep hover highlight; prevent selected when opening Spellbook
 ----------------------------------------------------------------------
 local function RestoreMicroButtonChrome(btn)
   if not btn then return end
@@ -150,7 +147,7 @@ local function RestoreMicroButtonChrome(btn)
   if n then n:SetAlpha(1); n:Show() end
   if p then p:SetAlpha(1); p:Hide() end
   if d then d:SetAlpha(1); d:Hide() end
-  if ht then ht:SetAlpha(1); ht:Hide() end
+  if ht then ht:SetAlpha(1) end
 
   if btn.Background then btn.Background:SetAlpha(1); btn.Background:Show() end
   if btn.PushedBackground then btn.PushedBackground:SetAlpha(1); btn.PushedBackground:Hide() end
@@ -171,8 +168,13 @@ local function ClearTalentsSelectedVisual()
   if ps.SetButtonState then ps:SetButtonState("NORMAL", false) end
 
   if ps.PushedBackground then ps.PushedBackground:Hide() end
+
   local ht = ps.GetHighlightTexture and ps:GetHighlightTexture()
-  if ht then ht:Hide(); ht:SetAlpha(1) end
+  if ht then
+    ht:SetAlpha(1)
+    -- do NOT permanently hide; hover should work
+    ht:Hide()
+  end
 
   RestoreMicroButtonChrome(ps)
 
@@ -193,8 +195,10 @@ local function PatchPlayerSpellsButton()
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText(self.tooltipText, 1, 1, 1)
     GameTooltip:Show()
+
     local ht = self.GetHighlightTexture and self:GetHighlightTexture()
     if ht then ht:SetAlpha(1); ht:Show() end
+
     local n = self.GetNormalTexture and self:GetNormalTexture()
     if n then n:SetAlpha(1) end
   end)
@@ -227,9 +231,7 @@ local function PatchPlayerSpellsButton()
 end
 
 ----------------------------------------------------------------------
--- Spellbook button (two implementations)
---   * Non-ElvUI: clone Talents chrome regions, strip baked glyphs, overlay book icon
---   * ElvUI: create a button and let ElvUI skin it (micro sheet); we only add tooltip/click
+-- Spellbook button helpers
 ----------------------------------------------------------------------
 local function CopyAtlasOrTexture(dst, src)
   if not (dst and src) then return end
@@ -314,6 +316,33 @@ local function EnsureIconOnlyHighlight(self, anchor)
   return hl
 end
 
+local function ApplyElvUIOverlayIcon(btn)
+  if not btn or btn._ExpandedMicrobar_ElvUIIconApplied then return end
+  btn._ExpandedMicrobar_ElvUIIconApplied = true
+
+  -- Hide ElvUI-assigned sheet textures on OUR custom button only.
+  local n = btn.GetNormalTexture and btn:GetNormalTexture()
+  local p = btn.GetPushedTexture and btn:GetPushedTexture()
+  local d = btn.GetDisabledTexture and btn:GetDisabledTexture()
+  if n then n:SetAlpha(0); n:Hide() end
+  if p then p:SetAlpha(0); p:Hide() end
+  if d then d:SetAlpha(0); d:Hide() end
+
+  local icon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
+  icon:SetSize(18, 18)
+  icon:SetPoint("CENTER", btn, "CENTER", 0, -2)
+  icon:SetTexture("Interface/Icons/INV_Misc_Book_09")
+  icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+  btn._ExpandedMicrobar_OverlayIcon = icon
+
+  btn:HookScript("OnMouseDown", function(self)
+    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(0.75) end
+  end)
+  btn:HookScript("OnMouseUp", function(self)
+    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(1) end
+  end)
+end
+
 local function CreateSpellbookButton(parent)
   if _G[ELVUI_BUTTON_NAME] then
     local existing = _G[ELVUI_BUTTON_NAME]
@@ -333,25 +362,21 @@ local function CreateSpellbookButton(parent)
 
   local elvuiMode = IsElvUIMicrobarActive()
 
-  -- IMPORTANT: in ElvUI mode, we still need placeholder textures to exist
-  -- (some ElvUI handlers assume GetNormalTexture/GetPushedTexture are non-nil).
+  -- ElvUI needs placeholder textures to exist
   if elvuiMode then
     if not (b.GetNormalTexture and b:GetNormalTexture()) then
-      local n = b:CreateTexture(nil, "ARTWORK")
-      b:SetNormalTexture(n)
+      b:SetNormalTexture(b:CreateTexture(nil, "ARTWORK"))
     end
     if not (b.GetPushedTexture and b:GetPushedTexture()) then
-      local p = b:CreateTexture(nil, "ARTWORK")
-      b:SetPushedTexture(p)
+      b:SetPushedTexture(b:CreateTexture(nil, "ARTWORK"))
     end
     if not (b.GetDisabledTexture and b:GetDisabledTexture()) then
-      local d = b:CreateTexture(nil, "ARTWORK")
-      b:SetDisabledTexture(d)
+      b:SetDisabledTexture(b:CreateTexture(nil, "ARTWORK"))
     end
   end
 
   if not elvuiMode then
-    -- Clone full micro chrome from the talents button.
+    -- Clone full micro chrome from talents button.
     b:SetNormalAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
     b:SetPushedAtlas("UI-HUD-MicroMenu-SpecTalents-Down", true)
     b:SetDisabledAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
@@ -441,7 +466,7 @@ local function CreateSpellbookButton(parent)
 end
 
 ----------------------------------------------------------------------
--- ElvUI integration
+-- ElvUI integration (no ticker)
 ----------------------------------------------------------------------
 local function InsertIntoMicroButtonsList()
   if type(_G.MICRO_BUTTONS) ~= "table" then
@@ -453,7 +478,6 @@ local function InsertIntoMicroButtonsList()
     if v == ELVUI_BUTTON_NAME then return end
   end
 
-  -- Insert right after Character button when possible.
   for i, v in ipairs(list) do
     if v == "CharacterMicroButton" then
       table.insert(list, i + 1, ELVUI_BUTTON_NAME)
@@ -462,35 +486,6 @@ local function InsertIntoMicroButtonsList()
   end
 
   table.insert(list, 1, ELVUI_BUTTON_NAME)
-end
-
-local function ApplyElvUIOverlayIcon(btn)
-  if not btn or btn._ExpandedMicrobar_ElvUIIconApplied then return end
-  btn._ExpandedMicrobar_ElvUIIconApplied = true
-
-  -- Hide ElvUI-assigned sheet textures (prevents wrong glyph / blank issues)
-  local n = btn.GetNormalTexture and btn:GetNormalTexture()
-  local p = btn.GetPushedTexture and btn:GetPushedTexture()
-  local d = btn.GetDisabledTexture and btn:GetDisabledTexture()
-  if n then n:SetAlpha(0); n:Hide() end
-  if p then p:SetAlpha(0); p:Hide() end
-  if d then d:SetAlpha(0); d:Hide() end
-
-  -- Icon overlay (always a book; avoids depending on ElvUI micro sheet coords)
-  local icon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
-  icon:SetSize(18, 18)
-  icon:SetPoint("CENTER", btn, "CENTER", 0, -2)
-  icon:SetTexture("Interface/Icons/INV_Misc_Book_09")
-  icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-  btn._ExpandedMicrobar_OverlayIcon = icon
-
-  -- Pressed feedback: simple alpha pulse on icon (border/background handled by ElvUI template)
-  btn:HookScript("OnMouseDown", function(self)
-    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(0.75) end
-  end)
-  btn:HookScript("OnMouseUp", function(self)
-    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(1) end
-  end)
 end
 
 local function TryElvUISkinSpellbook(btn)
@@ -503,14 +498,12 @@ local function TryElvUISkinSpellbook(btn)
   local ok2, AB = pcall(function() return E:GetModule("ActionBars") end)
   if not ok2 or not AB then return end
 
-  -- Teach ElvUI coords for our custom name so it can place the button.
   if AB.MICRO_OFFSETS and not AB.MICRO_OFFSETS[ELVUI_BUTTON_NAME] then
     AB.MICRO_OFFSETS[ELVUI_BUTTON_NAME] = AB.MICRO_OFFSETS.SpellbookMicroButton
       or AB.MICRO_OFFSETS.ProfessionMicroButton
       or (1.05 / 12.125)
   end
 
-  -- Skin (template/backdrop/hover) via ElvUI, but we will supply our own icon overlay.
   if type(AB.HandleMicroButton) == "function" then
     pcall(function() AB:HandleMicroButton(btn, ELVUI_BUTTON_NAME) end)
   end
@@ -518,6 +511,7 @@ local function TryElvUISkinSpellbook(btn)
     pcall(function() AB:UpdateMicroButtonTexture(ELVUI_BUTTON_NAME) end)
   end
 
+  -- Force our own icon overlay so we don't conflict with ElvUI micro-sheet coords.
   ApplyElvUIOverlayIcon(btn)
 end
 
@@ -526,21 +520,12 @@ local function EnsureElvUISpellbookButton()
 
   local btn = CreateSpellbookButton(_G.ElvUI_MicroBar)
   InsertIntoMicroButtonsList()
-  TryElvUISkinSpellbook(btn)
 
-  if btn and not btn._ExpandedMicrobar_ElvUISkinTicker then
-    local tries = 0
-    btn._ExpandedMicrobar_ElvUISkinTicker = C_Timer.NewTicker(0.25, function()
-      tries = tries + 1
-      TryElvUISkinSpellbook(btn)
-      if tries > 20 then
-        if btn._ExpandedMicrobar_ElvUISkinTicker then
-          btn._ExpandedMicrobar_ElvUISkinTicker:Cancel()
-          btn._ExpandedMicrobar_ElvUISkinTicker = nil
-        end
-      end
-    end)
-  end
+  -- Skin now, then retry once after ElvUI finishes its own microbar update.
+  TryElvUISkinSpellbook(btn)
+  C_Timer.After(0.5, function()
+    TryElvUISkinSpellbook(btn)
+  end)
 end
 
 ----------------------------------------------------------------------
@@ -691,9 +676,13 @@ f:RegisterEvent("PLAYER_REGEN_ENABLED")
 f:RegisterEvent("ADDON_LOADED")
 
 f:SetScript("OnEvent", function(_, event, addonName)
-  if event == "ADDON_LOADED" and addonName == "ElvUI" then
-    C_Timer.After(0, Apply)
-    C_Timer.After(0.2, Apply)
+  -- Only react to ADDON_LOADED for ElvUI itself. Other load-on-demand Blizzard addons
+  -- (like Blizzard_MapCanvas) should not trigger our Apply(), to avoid unintended interactions.
+  if event == "ADDON_LOADED" then
+    if addonName == "ElvUI" then
+      C_Timer.After(0, Apply)
+      C_Timer.After(0.2, Apply)
+    end
     return
   end
 
