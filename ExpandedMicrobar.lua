@@ -118,19 +118,29 @@ local function ClickPlayerSpellsTab(tabNameLower)
   if tab and tab.Click then tab:Click() end
 end
 
-local function TogglePlayerSpellsThen(fn)
-  if PlayerSpellsUtil and PlayerSpellsUtil.TogglePlayerSpellsFrame then
-    PlayerSpellsUtil.TogglePlayerSpellsFrame()
-    C_Timer.After(0, fn)
-  end
-end
-
 local function ForceSpellbookTab()
   ClickPlayerSpellsTab((SPELLBOOK and SPELLBOOK:lower()) or "spellbook")
 end
 
 local function ForceTalentsTab()
   ClickPlayerSpellsTab((TALENTS and TALENTS:lower()) or "talents")
+end
+
+-- IMPORTANT:
+-- PlayerSpellsUtil.TogglePlayerSpellsFrame() truly toggles.
+-- If the frame is already open, calling it would CLOSE the window.
+-- So this helper only toggles-open when it's not currently shown.
+local function TogglePlayerSpellsThen(fn)
+  local frame = _G.PlayerSpellsFrame
+  if frame and frame.IsShown and frame:IsShown() then
+    C_Timer.After(0, fn)
+    return
+  end
+
+  if PlayerSpellsUtil and PlayerSpellsUtil.TogglePlayerSpellsFrame then
+    PlayerSpellsUtil.TogglePlayerSpellsFrame()
+    C_Timer.After(0, fn)
+  end
 end
 
 ----------------------------------------------------------------------
@@ -189,8 +199,10 @@ local function PatchPlayerSpellsButton()
   _G.ExpandedMicrobar_LastSpellsMode = _G.ExpandedMicrobar_LastSpellsMode or "talents"
   b._ExpandedMicrobar_AllowChecked = false
 
+  -- Tooltip
   b.tooltipText = "Talents |cffffff00(N)|r"
 
+  -- Preserve hover highlight behavior
   b:HookScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText(self.tooltipText, 1, 1, 1)
@@ -209,15 +221,35 @@ local function PatchPlayerSpellsButton()
     if ht then ht:Hide() end
   end)
 
-  b:HookScript("OnClick", function(self)
+  -- Click behavior:
+  --   * If PlayerSpellsFrame is open and last mode is talents -> close it.
+  --   * Otherwise ensure open and switch to talents.
+  b:SetScript("OnClick", function(self)
+    local frame = _G.PlayerSpellsFrame
+    local last = _G.ExpandedMicrobar_LastSpellsMode or "talents"
+
+    -- NEW: Clicking the same mode again closes the frame.
+    if frame and frame.IsShown and frame:IsShown() and last == "talents" then
+      if PlayerSpellsUtil and PlayerSpellsUtil.TogglePlayerSpellsFrame then
+        self._ExpandedMicrobar_SuppressClear = true
+        PlayerSpellsUtil.TogglePlayerSpellsFrame()
+        self._ExpandedMicrobar_SuppressClear = false
+      end
+      return
+    end
+
     _G.ExpandedMicrobar_LastSpellsMode = "talents"
     self._ExpandedMicrobar_AllowChecked = true
-    C_Timer.After(0, function()
+
+    TogglePlayerSpellsThen(function()
       ForceTalentsTab()
-      C_Timer.After(0.2, function() self._ExpandedMicrobar_AllowChecked = false end)
+      C_Timer.After(0.2, function()
+        if self then self._ExpandedMicrobar_AllowChecked = false end
+      end)
     end)
   end)
 
+  -- Prevent "checked" state when Spellbook is opened via our button
   if type(b.SetChecked) == "function" and not b._ExpandedMicrobar_SetCheckedHooked then
     b._ExpandedMicrobar_SetCheckedHooked = true
     hooksecurefunc(b, "SetChecked", function(self, checked)
@@ -453,7 +485,21 @@ local function CreateSpellbookButton(parent)
     if hl then hl:Hide() end
   end)
 
+  -- Click behavior:
+  --   * If PlayerSpellsFrame is open and last mode is spellbook -> close it.
+  --   * Otherwise ensure open and switch to spellbook.
   b:SetScript("OnClick", function()
+    local frame = _G.PlayerSpellsFrame
+    local last = _G.ExpandedMicrobar_LastSpellsMode or "talents"
+
+    -- NEW: Clicking the same mode again closes the frame.
+    if frame and frame.IsShown and frame:IsShown() and last == "spellbook" then
+      if PlayerSpellsUtil and PlayerSpellsUtil.TogglePlayerSpellsFrame then
+        PlayerSpellsUtil.TogglePlayerSpellsFrame()
+      end
+      return
+    end
+
     _G.ExpandedMicrobar_LastSpellsMode = "spellbook"
     TogglePlayerSpellsThen(function()
       ForceSpellbookTab()
