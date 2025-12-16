@@ -1,21 +1,30 @@
 -- ExpandedMicrobar.lua
 -- Patch 11.2.7
 --
--- Stable version (syntax-clean):
---   * Custom Spellbook microbutton with correct chrome
---   * Talents microbutton stays Talents-only
---   * Opening Spellbook no longer forces Talents button into "down/selected"
---   * Extra far-right Customer Support / Web Ticket "?" is hidden
---   * Hover highlight works for stock buttons
+-- Modes:
+--   * ElvUI present (ElvUI_MicroBar exists):
+--       - Do NOT replace Blizzard/ElvUI layout
+--       - Create a unique micro button (ExpandedMicrobarSpellbookButton)
+--       - Insert it into _G.MICRO_BUTTONS so ElvUI will position it
+--       - Ask ElvUI ActionBars to skin/texture it
+--
+--   * No ElvUI:
+--       - Disable/hide Blizzard micro container layout
+--       - Create our own bar anchored where Blizzard’s was
+--       - Layout a curated set of micro buttons (no HelpMicroButton)
+--       - Add a real Spellbook button with matching chrome + book glyph
+--
+-- Also:
+--   - Retarget PlayerSpellsMicroButton to Talents-only
+--   - Hide the far-right Customer Support/Web Ticket "?" (HelpOpenWebTicketButton)
 
 local SPACING = -5
+local ELVUI_BUTTON_NAME = "ExpandedMicrobarSpellbookButton" -- unique, do NOT use SpellbookMicroButton
 
-----------------------------------------------------------------------
--- Layout order (left -> right)
-----------------------------------------------------------------------
+-- Non-ElvUI layout order (left -> right)
 local ORDER = {
   "CharacterMicroButton",
-  "ExpandedMicrobarSpellbookButton",
+  ELVUI_BUTTON_NAME,
   "PlayerSpellsMicroButton", -- Talents-only
   "HousingMicroButton",
   "ProfessionMicroButton",
@@ -35,34 +44,14 @@ local function InCombat()
   return InCombatLockdown and InCombatLockdown()
 end
 
-local function AtlasExists(name)
-  return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
+local function IsElvUIMicrobarActive()
+  return _G.ElvUI_MicroBar ~= nil
 end
 
 local function GetBlizzardMicroContainer()
   local bar = _G.MicroButtonAndBagsBar
   if bar and bar.MicroMenu then return bar.MicroMenu end
   return _G.MicroMenu
-end
-
-----------------------------------------------------------------------
--- Disable Blizzard micro layout
-----------------------------------------------------------------------
-local function DisableBlizzardMicroContainerLayout()
-  local c = GetBlizzardMicroContainer()
-  if not c or c._ExpandedMicrobar_Disabled then return end
-  c._ExpandedMicrobar_Disabled = true
-  c.Layout = function() end
-  c.UpdateHelpTicketButtonAnchor = function() end
-end
-
-local function HideBlizzardMicroContainer()
-  local c = GetBlizzardMicroContainer()
-  if c then
-    c:Hide()
-    c:SetAlpha(0)
-    c:EnableMouse(false)
-  end
 end
 
 ----------------------------------------------------------------------
@@ -95,7 +84,7 @@ end
 local function StartWebTicketHider()
   HideWebTicketOnce()
   if _G.ExpandedMicrobarTicketTicker then return end
-  _G.ExpandedMicrobarTicketTicker = C_Timer.NewTicker(0.25, HideWebTicketOnce, 80)
+  _G.ExpandedMicrobarTicketTicker = C_Timer.NewTicker(0.25, HideWebTicketOnce, 80) -- ~20s
 end
 
 ----------------------------------------------------------------------
@@ -112,9 +101,7 @@ local function ClickPlayerSpellsTab(tabNameLower)
       if tx and tx:lower() == tabNameLower then return true end
     end
     local tt = btn.tooltipText or btn.tooltipTitle
-    if type(tt) == "string" and tt:lower():find(tabNameLower, 1, true) then
-      return true
-    end
+    if type(tt) == "string" and tt:lower():find(tabNameLower, 1, true) then return true end
     return false
   end
 
@@ -122,11 +109,9 @@ local function ClickPlayerSpellsTab(tabNameLower)
     if depth > 7 then return nil end
     for _, c in ipairs({ root:GetChildren() }) do
       if c and c.IsObjectType then
-        if c:IsObjectType("Button") and matches(c) then
-          return c
-        end
-        local found = scan(c, depth + 1)
-        if found then return found end
+        if c:IsObjectType("Button") and matches(c) then return c end
+        local f = scan(c, depth + 1)
+        if f then return f end
       end
     end
     return nil
@@ -152,285 +137,48 @@ local function ForceTalentsTab()
 end
 
 ----------------------------------------------------------------------
--- Prevent Talents button from showing selected when Spellbook is used
+-- Talents button state (prevent losing chrome / prevent selected when spellbook opened)
 ----------------------------------------------------------------------
+local function RestoreMicroButtonChrome(btn)
+  if not btn then return end
+
+  local n = btn.GetNormalTexture and btn:GetNormalTexture()
+  local p = btn.GetPushedTexture and btn:GetPushedTexture()
+  local d = btn.GetDisabledTexture and btn:GetDisabledTexture()
+  local ht = btn.GetHighlightTexture and btn:GetHighlightTexture()
+
+  if n then n:SetAlpha(1); n:Show() end
+  if p then p:SetAlpha(1); p:Hide() end
+  if d then d:SetAlpha(1); d:Hide() end
+  if ht then ht:SetAlpha(1); ht:Hide() end
+
+  if btn.Background then btn.Background:SetAlpha(1); btn.Background:Show() end
+  if btn.PushedBackground then btn.PushedBackground:SetAlpha(1); btn.PushedBackground:Hide() end
+
+  if btn.FlashBorder then btn.FlashBorder:Hide() end
+  if btn.FlashContent then btn.FlashContent:Hide() end
+  if btn.QuickKeybindHighlightTexture then btn.QuickKeybindHighlightTexture:Hide() end
+end
+
 local function ClearTalentsSelectedVisual()
   local ps = _G.PlayerSpellsMicroButton
   if not ps then return end
+
   if ps._ExpandedMicrobar_SuppressClear then return end
   ps._ExpandedMicrobar_SuppressClear = true
 
-  if ps.SetChecked then
-    ps:SetChecked(false)
-  end
-  if ps.SetButtonState then
-    ps:SetButtonState("NORMAL", false)
-  end
-
-  local ht = ps.GetHighlightTexture and ps:GetHighlightTexture()
-  if ht then ht:Hide() end
-
-  local n = ps.GetNormalTexture and ps:GetNormalTexture()
-  if n then n:SetAlpha(1); n:Show() end
+  if ps.SetChecked then ps:SetChecked(false) end
+  if ps.SetButtonState then ps:SetButtonState("NORMAL", false) end
 
   if ps.PushedBackground then ps.PushedBackground:Hide() end
+  local ht = ps.GetHighlightTexture and ps:GetHighlightTexture()
+  if ht then ht:Hide(); ht:SetAlpha(1) end
+
+  RestoreMicroButtonChrome(ps)
 
   ps._ExpandedMicrobar_SuppressClear = false
 end
 
-----------------------------------------------------------------------
--- Spellbook button (robust: atlas if available, else clone chrome + overlay)
-----------------------------------------------------------------------
-local function EnsureOverlayIcon(btn, ref)
-  if btn._ExpandedMicrobar_OverlayIcon then return btn._ExpandedMicrobar_OverlayIcon end
-
-  local icon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
-  icon:SetSize(18, 18)
-  icon:SetPoint("CENTER", btn, "CENTER", 0, -2)
-
-  if ref and ref.Icon and ref.Icon.IsObjectType and ref.Icon:IsObjectType("Texture") then
-    local w, h = ref.Icon:GetSize()
-    if w and h and w > 0 and h > 0 then icon:SetSize(w, h) end
-
-    icon:ClearAllPoints()
-    local n = ref.Icon:GetNumPoints() or 0
-    if n > 0 then
-      for i = 1, n do
-        local p, rel, rp, x, y = ref.Icon:GetPoint(i)
-        if p and rel and rp then icon:SetPoint(p, rel, rp, x or 0, y or 0) end
-      end
-    else
-      icon:SetPoint("CENTER", btn, "CENTER", 0, -2)
-    end
-  end
-
-  btn._ExpandedMicrobar_OverlayIcon = icon
-  return icon
-end
-
-local function StripBakedGlyphLayers(btn)
-  local n = btn.GetNormalTexture and btn:GetNormalTexture()
-  local p = btn.GetPushedTexture and btn:GetPushedTexture()
-  local d = btn.GetDisabledTexture and btn:GetDisabledTexture()
-  if n then n:SetAlpha(0) end
-  if p then p:SetAlpha(0) end
-  if d then d:SetAlpha(0) end
-end
-
-local function SetSpellbookPressedVisual(btn, pressed)
-  if not btn or not btn._ExpandedMicrobar_UseChromeSwap then return end
-  if pressed then
-    if btn.Background then btn.Background:Hide() end
-    if btn.PushedBackground then btn.PushedBackground:Show() end
-  else
-    if btn.PushedBackground then btn.PushedBackground:Hide() end
-    if btn.Background then btn.Background:Show() end
-  end
-end
-
-local function CreateSpellbookButton(parent)
-  if _G.ExpandedMicrobarSpellbookButton then
-    return _G.ExpandedMicrobarSpellbookButton
-  end
-
-  local ref = _G.PlayerSpellsMicroButton
-  if not ref then return nil end
-
-  local objectType = (ref.GetObjectType and ref:GetObjectType()) or "Button"
-  local b = CreateFrame(objectType, "ExpandedMicrobarSpellbookButton", parent)
-  b:SetSize(ref:GetSize())
-  b:SetFrameStrata(ref:GetFrameStrata())
-  b:SetFrameLevel(ref:GetFrameLevel())
-  b:RegisterForClicks("AnyUp")
-
-  local upCandidates = {
-    "UI-HUD-MicroMenu-Spellbook-Up",
-    "UI-HUD-MicroMenu-SpellBook-Up",
-    "UI-HUD-MicroMenu-Spellbook",
-    "UI-HUD-MicroMenu-SpellBook",
-  }
-  local downCandidates = {
-    "UI-HUD-MicroMenu-Spellbook-Down",
-    "UI-HUD-MicroMenu-SpellBook-Down",
-  }
-
-  local chosenUp
-  for _, a in ipairs(upCandidates) do
-    if AtlasExists(a) then chosenUp = a break end
-  end
-
-  if chosenUp then
-    local chosenDown
-    for _, a in ipairs(downCandidates) do
-      if AtlasExists(a) then chosenDown = a break end
-    end
-
-    b:SetNormalAtlas(chosenUp, true)
-    b:SetPushedAtlas(chosenDown or chosenUp, true)
-    b:SetDisabledAtlas(chosenUp, true)
-    b:SetHighlightAtlas("UI-HUD-MicroMenu-Highlight", "ADD")
-
-    for _, getter in ipairs({"GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture"}) do
-      local t = b[getter] and b[getter](b)
-      if t then
-        t:ClearAllPoints()
-        t:SetAllPoints(b)
-        t:SetAlpha(1)
-      end
-    end
-
-    b._ExpandedMicrobar_UseChromeSwap = false
-  else
-    -- Fallback: clone talents chrome and overlay book icon.
-    b:SetNormalAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
-    b:SetPushedAtlas("UI-HUD-MicroMenu-SpecTalents-Down", true)
-    b:SetDisabledAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
-    b:SetHighlightAtlas("UI-HUD-MicroMenu-Highlight", "ADD")
-
-    local function copy(dst, src)
-      if not (dst and src) then return end
-      if src.GetAtlas and dst.SetAtlas then
-        local a = src:GetAtlas()
-        if a then dst:SetAtlas(a, true) return end
-      end
-      if src.GetTexture and dst.SetTexture then
-        local t = src:GetTexture()
-        if t then dst:SetTexture(t) end
-      end
-    end
-
-    copy(b:GetNormalTexture(), ref:GetNormalTexture())
-    copy(b:GetPushedTexture(), ref:GetPushedTexture())
-    copy(b:GetDisabledTexture(), ref:GetDisabledTexture())
-    copy(b:GetHighlightTexture(), ref:GetHighlightTexture())
-
-    for _, getter in ipairs({"GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture"}) do
-      local t = b[getter] and b[getter](b)
-      if t then
-        t:ClearAllPoints(); t:SetAllPoints(b); t:SetAlpha(1)
-      end
-    end
-
-    local function cloneRegion(key)
-      local src = ref[key]
-      if not (src and src.IsObjectType and src:IsObjectType("Texture")) then return end
-      local layer, sub = src:GetDrawLayer()
-      local dst = b:CreateTexture(nil, layer, nil, sub)
-      b[key] = dst
-      copy(dst, src)
-      dst:ClearAllPoints(); dst:SetAllPoints(b); dst:SetAlpha(1); dst:Show()
-    end
-
-    cloneRegion("Background")
-    cloneRegion("PushedBackground")
-
-    b._ExpandedMicrobar_UseChromeSwap = true
-    StripBakedGlyphLayers(b)
-
-    -- Replace highlight with safe overlay (cloned highlight can contain talents glyph)
-    local builtinHT = b.GetHighlightTexture and b:GetHighlightTexture()
-    if builtinHT then builtinHT:Hide(); builtinHT:SetAlpha(0) end
-
-    local hh = b:CreateTexture(nil, "HIGHLIGHT")
-    hh:SetAllPoints(b)
-    hh:SetColorTexture(1, 1, 1, 0.2)
-    hh:Hide()
-    b._ExpandedMicrobar_HoverHighlight = hh
-
-    local icon = EnsureOverlayIcon(b, ref)
-    icon:SetTexture("Interface/Icons/INV_Misc_Book_09")
-    icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    icon:SetAlpha(1)
-    icon:Show()
-
-    b:SetScript("OnMouseDown", function(self) SetSpellbookPressedVisual(self, true) end)
-    b:SetScript("OnMouseUp", function(self) SetSpellbookPressedVisual(self, false) end)
-  end
-
-    -- Spellbook hover: highlight ONLY the icon (not the full button chrome)
-  -- Disable built-in highlight (it highlights the whole button)
-  do
-    local builtinHT = b.GetHighlightTexture and b:GetHighlightTexture()
-    if builtinHT then
-      builtinHT:SetAlpha(0)
-      builtinHT:Hide()
-    end
-  end
-
-  -- Icon-only glow (optional polish): reuse Blizzard highlight atlas, additive blend
-  -- For atlas path (chosenUp exists), the glyph is baked into normal/pushed.
-  -- For fallback path, the glyph is our overlay book texture.
-  local function EnsureIconOnlyHighlight(self)
-    if self._ExpandedMicrobar_IconHighlight then return self._ExpandedMicrobar_IconHighlight end
-
-    -- Prefer the overlay icon if we have it; otherwise attach to the normal texture
-    local anchor = self._ExpandedMicrobar_OverlayIcon
-    if not anchor then
-      anchor = self.GetNormalTexture and self:GetNormalTexture()
-    end
-
-    local hl = self:CreateTexture(nil, "OVERLAY", nil, 7)
-    if anchor and anchor.GetSize then
-      local w, h = anchor:GetSize()
-      if w and h and w > 0 and h > 0 then
-        hl:SetSize(w, h)
-      else
-        hl:SetSize(18, 18)
-      end
-      hl:ClearAllPoints()
-            -- Slightly larger than the icon so the glow is visible.
-      hl:SetPoint("CENTER", anchor, "CENTER", 0, 0)
-      hl:SetSize((w and w > 0) and (w + 10) or 28, (h and h > 0) and (h + 10) or 28)
-    else
-      hl:SetSize(18, 18)
-      hl:SetPoint("CENTER", self, "CENTER", 0, -2)
-    end
-
-        -- NOTE: UI-HUD-MicroMenu-Highlight is designed for the whole microbutton and can be
-    -- effectively invisible when shrunk to icon size. Use a reliable square glow instead.
-    hl:SetTexture("Interface/Buttons/ButtonHilight-Square")
-    hl:SetBlendMode("ADD")
-    hl:SetAlpha(0.45)
-    hl:Hide()
-
-    self._ExpandedMicrobar_IconHighlight = hl
-    return hl
-  end
-
-  b:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Spellbook |cffffff00(P)|r", 1, 1, 1)
-    GameTooltip:Show()
-
-    local hl = EnsureIconOnlyHighlight(self)
-    if hl then hl:Show() end
-  end)
-
-  b:SetScript("OnLeave", function(self)
-    GameTooltip_Hide()
-
-    local hl = self._ExpandedMicrobar_IconHighlight
-    if hl then hl:Hide() end
-
-    SetSpellbookPressedVisual(self, false)
-  end)
-
-  b:SetScript("OnClick", function()
-    _G.ExpandedMicrobar_LastSpellsMode = "spellbook"
-
-    TogglePlayerSpellsThen(function()
-      ForceSpellbookTab()
-      C_Timer.After(0, ClearTalentsSelectedVisual)
-      C_Timer.After(0.15, ClearTalentsSelectedVisual)
-    end)
-  end)
-
-  return b
-end
-
-----------------------------------------------------------------------
--- Patch PlayerSpellsMicroButton to be Talents-only
-----------------------------------------------------------------------
 local function PatchPlayerSpellsButton()
   local b = _G.PlayerSpellsMicroButton
   if not b or b._ExpandedMicrobar_Patched then return end
@@ -442,14 +190,13 @@ local function PatchPlayerSpellsButton()
   b.tooltipText = "Talents |cffffff00(N)|r"
 
   b:HookScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText(self.tooltipText, 1, 1, 1)
+    GameTooltip:Show()
     local ht = self.GetHighlightTexture and self:GetHighlightTexture()
     if ht then ht:SetAlpha(1); ht:Show() end
     local n = self.GetNormalTexture and self:GetNormalTexture()
     if n then n:SetAlpha(1) end
-
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText(self.tooltipText, 1, 1, 1)
-    GameTooltip:Show()
   end)
 
   b:HookScript("OnLeave", function(self)
@@ -461,7 +208,6 @@ local function PatchPlayerSpellsButton()
   b:HookScript("OnClick", function(self)
     _G.ExpandedMicrobar_LastSpellsMode = "talents"
     self._ExpandedMicrobar_AllowChecked = true
-
     C_Timer.After(0, function()
       ForceTalentsTab()
       C_Timer.After(0.2, function() self._ExpandedMicrobar_AllowChecked = false end)
@@ -481,11 +227,345 @@ local function PatchPlayerSpellsButton()
 end
 
 ----------------------------------------------------------------------
--- Our replacement bar + layout
+-- Spellbook button (two implementations)
+--   * Non-ElvUI: clone Talents chrome regions, strip baked glyphs, overlay book icon
+--   * ElvUI: create a button and let ElvUI skin it (micro sheet); we only add tooltip/click
+----------------------------------------------------------------------
+local function CopyAtlasOrTexture(dst, src)
+  if not (dst and src) then return end
+
+  if src.GetAtlas and dst.SetAtlas then
+    local a = src:GetAtlas()
+    if a then dst:SetAtlas(a, true) return end
+  end
+
+  if src.GetTexture and dst.SetTexture then
+    local t = src:GetTexture()
+    if t then dst:SetTexture(t) end
+  end
+
+  if src.GetTexCoord and dst.SetTexCoord then
+    local l, r, t, b = src:GetTexCoord()
+    if l then dst:SetTexCoord(l, r, t, b) end
+  end
+
+  if src.GetVertexColor and dst.SetVertexColor then
+    local r, g, b, a = src:GetVertexColor()
+    if r then dst:SetVertexColor(r, g, b, a) end
+  end
+
+  if src.GetBlendMode and dst.SetBlendMode then
+    local bm = src:GetBlendMode()
+    if bm then dst:SetBlendMode(bm) end
+  end
+
+  if src.GetAlpha and dst.SetAlpha then
+    dst:SetAlpha(src:GetAlpha() or 1)
+  end
+end
+
+local function CloneTextureRegion(dstBtn, key, srcBtn)
+  local src = srcBtn and srcBtn[key]
+  if not (src and src.IsObjectType and src:IsObjectType("Texture")) then return end
+
+  local layer, subLevel = src:GetDrawLayer()
+  local dst = dstBtn[key]
+  if not dst then
+    dst = dstBtn:CreateTexture(nil, layer, nil, subLevel)
+    dstBtn[key] = dst
+  end
+
+  CopyAtlasOrTexture(dst, src)
+
+  local w, h = src:GetSize()
+  if w and h and w > 0 and h > 0 then dst:SetSize(w, h) end
+
+  dst:ClearAllPoints()
+  local n = src:GetNumPoints() or 0
+  for i = 1, n do
+    local p, rel, rp, x, y = src:GetPoint(i)
+    if p and rel and rp then
+      dst:SetPoint(p, rel, rp, x or 0, y or 0)
+    end
+  end
+  dst:Show()
+end
+
+local function EnsureIconOnlyHighlight(self, anchor)
+  if self._ExpandedMicrobar_IconHighlight then return self._ExpandedMicrobar_IconHighlight end
+
+  local hl = self:CreateTexture(nil, "OVERLAY", nil, 7)
+  local a = anchor or self
+
+  local w, h
+  if a and a.GetSize then w, h = a:GetSize() end
+  w = (w and w > 0) and w or 18
+  h = (h and h > 0) and h or 18
+
+  hl:ClearAllPoints()
+  hl:SetPoint("CENTER", a, "CENTER", 0, 0)
+  hl:SetSize(w + 10, h + 10)
+  hl:SetTexture("Interface/Buttons/ButtonHilight-Square")
+  hl:SetBlendMode("ADD")
+  hl:SetAlpha(0.45)
+  hl:Hide()
+
+  self._ExpandedMicrobar_IconHighlight = hl
+  return hl
+end
+
+local function CreateSpellbookButton(parent)
+  if _G[ELVUI_BUTTON_NAME] then
+    local existing = _G[ELVUI_BUTTON_NAME]
+    if existing.SetParent then existing:SetParent(parent) end
+    return existing
+  end
+
+  local ref = _G.PlayerSpellsMicroButton
+  if not ref then return nil end
+
+  local b = CreateFrame("Button", ELVUI_BUTTON_NAME, parent)
+  b:SetSize(ref:GetSize())
+  b:SetFrameStrata(ref:GetFrameStrata())
+  b:SetFrameLevel(ref:GetFrameLevel())
+  b:EnableMouse(true)
+  b:RegisterForClicks("AnyUp")
+
+  local elvuiMode = IsElvUIMicrobarActive()
+
+  -- IMPORTANT: in ElvUI mode, we still need placeholder textures to exist
+  -- (some ElvUI handlers assume GetNormalTexture/GetPushedTexture are non-nil).
+  if elvuiMode then
+    if not (b.GetNormalTexture and b:GetNormalTexture()) then
+      local n = b:CreateTexture(nil, "ARTWORK")
+      b:SetNormalTexture(n)
+    end
+    if not (b.GetPushedTexture and b:GetPushedTexture()) then
+      local p = b:CreateTexture(nil, "ARTWORK")
+      b:SetPushedTexture(p)
+    end
+    if not (b.GetDisabledTexture and b:GetDisabledTexture()) then
+      local d = b:CreateTexture(nil, "ARTWORK")
+      b:SetDisabledTexture(d)
+    end
+  end
+
+  if not elvuiMode then
+    -- Clone full micro chrome from the talents button.
+    b:SetNormalAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
+    b:SetPushedAtlas("UI-HUD-MicroMenu-SpecTalents-Down", true)
+    b:SetDisabledAtlas("UI-HUD-MicroMenu-SpecTalents-Up", true)
+    b:SetHighlightAtlas("UI-HUD-MicroMenu-Highlight", "ADD")
+
+    CopyAtlasOrTexture(b:GetNormalTexture(),    ref:GetNormalTexture())
+    CopyAtlasOrTexture(b:GetPushedTexture(),    ref:GetPushedTexture())
+    CopyAtlasOrTexture(b:GetDisabledTexture(),  ref:GetDisabledTexture())
+    CopyAtlasOrTexture(b:GetHighlightTexture(), ref:GetHighlightTexture())
+
+    for _, getter in ipairs({"GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture"}) do
+      local t = b[getter] and b[getter](b)
+      if t then
+        t:ClearAllPoints(); t:SetAllPoints(b)
+        if getter == "GetHighlightTexture" then t:SetAlpha(0); t:Hide() else t:SetAlpha(1) end
+      end
+    end
+
+    CloneTextureRegion(b, "Background", ref)
+    CloneTextureRegion(b, "PushedBackground", ref)
+    CloneTextureRegion(b, "FlashBorder", ref)
+    CloneTextureRegion(b, "FlashContent", ref)
+    CloneTextureRegion(b, "QuickKeybindHighlightTexture", ref)
+
+    if b.Background then b.Background:ClearAllPoints(); b.Background:SetAllPoints(b); b.Background:Show(); b.Background:SetAlpha(1) end
+    if b.PushedBackground then b.PushedBackground:ClearAllPoints(); b.PushedBackground:SetAllPoints(b); b.PushedBackground:Hide(); b.PushedBackground:SetAlpha(1) end
+    if b.FlashBorder then b.FlashBorder:Hide() end
+    if b.FlashContent then b.FlashContent:Hide() end
+    if b.QuickKeybindHighlightTexture then b.QuickKeybindHighlightTexture:Hide() end
+
+    -- Strip baked glyphs from base textures.
+    local n = b.GetNormalTexture and b:GetNormalTexture()
+    local p = b.GetPushedTexture and b:GetPushedTexture()
+    local d = b.GetDisabledTexture and b:GetDisabledTexture()
+    if n then n:SetAlpha(0) end
+    if p then p:SetAlpha(0) end
+    if d then d:SetAlpha(0) end
+
+    -- Overlay book icon.
+    local icon = b:CreateTexture(nil, "OVERLAY", nil, 7)
+    icon:SetSize(18, 18)
+    icon:SetPoint("CENTER", b, "CENTER", 0, -2)
+    icon:SetTexture("Interface/Icons/INV_Misc_Book_09")
+    icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    b._ExpandedMicrobar_OverlayIcon = icon
+
+    -- Pressed feedback swaps chrome.
+    b:SetScript("OnMouseDown", function(self)
+      if self.Background and self.PushedBackground then
+        self.Background:Hide(); self.PushedBackground:Show()
+      end
+    end)
+    b:SetScript("OnMouseUp", function(self)
+      if self.Background and self.PushedBackground then
+        self.PushedBackground:Hide(); self.Background:Show()
+      end
+    end)
+  end
+
+  -- Tooltip + icon-only highlight (both modes)
+  b:HookScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Spellbook |cffffff00(P)|r", 1, 1, 1)
+    GameTooltip:Show()
+
+    local anchor = self._ExpandedMicrobar_OverlayIcon or (self.GetNormalTexture and self:GetNormalTexture())
+    local hl = EnsureIconOnlyHighlight(self, anchor)
+    if hl then hl:Show() end
+  end)
+
+  b:HookScript("OnLeave", function(self)
+    GameTooltip_Hide()
+    local hl = self._ExpandedMicrobar_IconHighlight
+    if hl then hl:Hide() end
+  end)
+
+  b:SetScript("OnClick", function()
+    _G.ExpandedMicrobar_LastSpellsMode = "spellbook"
+    TogglePlayerSpellsThen(function()
+      ForceSpellbookTab()
+      C_Timer.After(0, ClearTalentsSelectedVisual)
+      C_Timer.After(0.15, ClearTalentsSelectedVisual)
+    end)
+  end)
+
+  return b
+end
+
+----------------------------------------------------------------------
+-- ElvUI integration
+----------------------------------------------------------------------
+local function InsertIntoMicroButtonsList()
+  if type(_G.MICRO_BUTTONS) ~= "table" then
+    _G.MICRO_BUTTONS = {}
+  end
+
+  local list = _G.MICRO_BUTTONS
+  for _, v in ipairs(list) do
+    if v == ELVUI_BUTTON_NAME then return end
+  end
+
+  -- Insert right after Character button when possible.
+  for i, v in ipairs(list) do
+    if v == "CharacterMicroButton" then
+      table.insert(list, i + 1, ELVUI_BUTTON_NAME)
+      return
+    end
+  end
+
+  table.insert(list, 1, ELVUI_BUTTON_NAME)
+end
+
+local function ApplyElvUIOverlayIcon(btn)
+  if not btn or btn._ExpandedMicrobar_ElvUIIconApplied then return end
+  btn._ExpandedMicrobar_ElvUIIconApplied = true
+
+  -- Hide ElvUI-assigned sheet textures (prevents wrong glyph / blank issues)
+  local n = btn.GetNormalTexture and btn:GetNormalTexture()
+  local p = btn.GetPushedTexture and btn:GetPushedTexture()
+  local d = btn.GetDisabledTexture and btn:GetDisabledTexture()
+  if n then n:SetAlpha(0); n:Hide() end
+  if p then p:SetAlpha(0); p:Hide() end
+  if d then d:SetAlpha(0); d:Hide() end
+
+  -- Icon overlay (always a book; avoids depending on ElvUI micro sheet coords)
+  local icon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
+  icon:SetSize(18, 18)
+  icon:SetPoint("CENTER", btn, "CENTER", 0, -2)
+  icon:SetTexture("Interface/Icons/INV_Misc_Book_09")
+  icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+  btn._ExpandedMicrobar_OverlayIcon = icon
+
+  -- Pressed feedback: simple alpha pulse on icon (border/background handled by ElvUI template)
+  btn:HookScript("OnMouseDown", function(self)
+    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(0.75) end
+  end)
+  btn:HookScript("OnMouseUp", function(self)
+    if self._ExpandedMicrobar_OverlayIcon then self._ExpandedMicrobar_OverlayIcon:SetAlpha(1) end
+  end)
+end
+
+local function TryElvUISkinSpellbook(btn)
+  if not btn then return end
+  if not _G.ElvUI or type(unpack) ~= "function" then return end
+
+  local ok, E = pcall(unpack, _G.ElvUI)
+  if not ok or not E or type(E.GetModule) ~= "function" then return end
+
+  local ok2, AB = pcall(function() return E:GetModule("ActionBars") end)
+  if not ok2 or not AB then return end
+
+  -- Teach ElvUI coords for our custom name so it can place the button.
+  if AB.MICRO_OFFSETS and not AB.MICRO_OFFSETS[ELVUI_BUTTON_NAME] then
+    AB.MICRO_OFFSETS[ELVUI_BUTTON_NAME] = AB.MICRO_OFFSETS.SpellbookMicroButton
+      or AB.MICRO_OFFSETS.ProfessionMicroButton
+      or (1.05 / 12.125)
+  end
+
+  -- Skin (template/backdrop/hover) via ElvUI, but we will supply our own icon overlay.
+  if type(AB.HandleMicroButton) == "function" then
+    pcall(function() AB:HandleMicroButton(btn, ELVUI_BUTTON_NAME) end)
+  end
+  if type(AB.UpdateMicroButtonTexture) == "function" then
+    pcall(function() AB:UpdateMicroButtonTexture(ELVUI_BUTTON_NAME) end)
+  end
+
+  ApplyElvUIOverlayIcon(btn)
+end
+
+local function EnsureElvUISpellbookButton()
+  if not IsElvUIMicrobarActive() then return end
+
+  local btn = CreateSpellbookButton(_G.ElvUI_MicroBar)
+  InsertIntoMicroButtonsList()
+  TryElvUISkinSpellbook(btn)
+
+  if btn and not btn._ExpandedMicrobar_ElvUISkinTicker then
+    local tries = 0
+    btn._ExpandedMicrobar_ElvUISkinTicker = C_Timer.NewTicker(0.25, function()
+      tries = tries + 1
+      TryElvUISkinSpellbook(btn)
+      if tries > 20 then
+        if btn._ExpandedMicrobar_ElvUISkinTicker then
+          btn._ExpandedMicrobar_ElvUISkinTicker:Cancel()
+          btn._ExpandedMicrobar_ElvUISkinTicker = nil
+        end
+      end
+    end)
+  end
+end
+
+----------------------------------------------------------------------
+-- Non-ElvUI: replacement bar + layout
 ----------------------------------------------------------------------
 local OurBar
 local ButtonsForLayout = {}
 local LayoutQueued = false
+
+local function DisableBlizzardMicroContainerLayout()
+  local c = GetBlizzardMicroContainer()
+  if not c or c._ExpandedMicrobar_Disabled then return end
+  c._ExpandedMicrobar_Disabled = true
+  c.Layout = function() end
+  c.UpdateHelpTicketButtonAnchor = function() end
+end
+
+local function HideBlizzardMicroContainer()
+  local c = GetBlizzardMicroContainer()
+  if c then
+    c:Hide()
+    c:SetAlpha(0)
+    c:EnableMouse(false)
+  end
+end
 
 local function CreateOurBar()
   if OurBar then return OurBar end
@@ -563,7 +643,7 @@ local function CollectButtons()
 
   for _, name in ipairs(ORDER) do
     local b = _G[name]
-    if name == "ExpandedMicrobarSpellbookButton" then
+    if name == ELVUI_BUTTON_NAME then
       b = CreateSpellbookButton(OurBar)
     end
 
@@ -580,11 +660,16 @@ end
 local function Apply()
   if InCombat() then return end
 
+  StartWebTicketHider()
+  PatchPlayerSpellsButton()
+
+  if IsElvUIMicrobarActive() then
+    EnsureElvUISpellbookButton()
+    return
+  end
+
   DisableBlizzardMicroContainerLayout()
   HideBlizzardMicroContainer()
-  StartWebTicketHider()
-
-  PatchPlayerSpellsButton()
 
   CreateOurBar()
   CollectButtons()
@@ -603,7 +688,15 @@ end
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("PLAYER_REGEN_ENABLED")
-f:SetScript("OnEvent", function()
+f:RegisterEvent("ADDON_LOADED")
+
+f:SetScript("OnEvent", function(_, event, addonName)
+  if event == "ADDON_LOADED" and addonName == "ElvUI" then
+    C_Timer.After(0, Apply)
+    C_Timer.After(0.2, Apply)
+    return
+  end
+
   Apply()
   C_Timer.After(0.2, Apply)
   C_Timer.After(0.8, Apply)
