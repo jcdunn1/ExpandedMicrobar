@@ -347,16 +347,71 @@ local function CreateSpellbookButton(parent)
     b:SetScript("OnMouseUp", function(self) SetSpellbookPressedVisual(self, false) end)
   end
 
+    -- Spellbook hover: highlight ONLY the icon (not the full button chrome)
+  -- Disable built-in highlight (it highlights the whole button)
+  do
+    local builtinHT = b.GetHighlightTexture and b:GetHighlightTexture()
+    if builtinHT then
+      builtinHT:SetAlpha(0)
+      builtinHT:Hide()
+    end
+  end
+
+  -- Icon-only glow (optional polish): reuse Blizzard highlight atlas, additive blend
+  -- For atlas path (chosenUp exists), the glyph is baked into normal/pushed.
+  -- For fallback path, the glyph is our overlay book texture.
+  local function EnsureIconOnlyHighlight(self)
+    if self._ExpandedMicrobar_IconHighlight then return self._ExpandedMicrobar_IconHighlight end
+
+    -- Prefer the overlay icon if we have it; otherwise attach to the normal texture
+    local anchor = self._ExpandedMicrobar_OverlayIcon
+    if not anchor then
+      anchor = self.GetNormalTexture and self:GetNormalTexture()
+    end
+
+    local hl = self:CreateTexture(nil, "OVERLAY", nil, 7)
+    if anchor and anchor.GetSize then
+      local w, h = anchor:GetSize()
+      if w and h and w > 0 and h > 0 then
+        hl:SetSize(w, h)
+      else
+        hl:SetSize(18, 18)
+      end
+      hl:ClearAllPoints()
+            -- Slightly larger than the icon so the glow is visible.
+      hl:SetPoint("CENTER", anchor, "CENTER", 0, 0)
+      hl:SetSize((w and w > 0) and (w + 10) or 28, (h and h > 0) and (h + 10) or 28)
+    else
+      hl:SetSize(18, 18)
+      hl:SetPoint("CENTER", self, "CENTER", 0, -2)
+    end
+
+        -- NOTE: UI-HUD-MicroMenu-Highlight is designed for the whole microbutton and can be
+    -- effectively invisible when shrunk to icon size. Use a reliable square glow instead.
+    hl:SetTexture("Interface/Buttons/ButtonHilight-Square")
+    hl:SetBlendMode("ADD")
+    hl:SetAlpha(0.45)
+    hl:Hide()
+
+    self._ExpandedMicrobar_IconHighlight = hl
+    return hl
+  end
+
   b:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText("Spellbook |cffffff00(P)|r", 1, 1, 1)
     GameTooltip:Show()
-    if self._ExpandedMicrobar_HoverHighlight then self._ExpandedMicrobar_HoverHighlight:Show() end
+
+    local hl = EnsureIconOnlyHighlight(self)
+    if hl then hl:Show() end
   end)
 
   b:SetScript("OnLeave", function(self)
     GameTooltip_Hide()
-    if self._ExpandedMicrobar_HoverHighlight then self._ExpandedMicrobar_HoverHighlight:Hide() end
+
+    local hl = self._ExpandedMicrobar_IconHighlight
+    if hl then hl:Hide() end
+
     SetSpellbookPressedVisual(self, false)
   end)
 
