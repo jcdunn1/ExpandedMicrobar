@@ -1,0 +1,9 @@
+## Interface: 110207
+## Title: ExpandedMicrobar
+## Notes: Adds spellbook to the microbar
+## Author: Machiepoo
+## Version: 1.0.0
+## SavedVariables: ExpandedMicrobarDB
+
+
+ExpandedMicrobar.lua
