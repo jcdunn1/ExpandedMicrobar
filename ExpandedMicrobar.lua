@@ -328,7 +328,7 @@ end
 local function EnsureIconOnlyHighlight(self, anchor)
   if self._ExpandedMicrobar_IconHighlight then return self._ExpandedMicrobar_IconHighlight end
 
-  local hl = self:CreateTexture(nil, "OVERLAY", nil, 7)
+  local hl = self:CreateTexture(nil, "OVERLAY")
   local a = anchor or self
 
   local w, h
@@ -468,7 +468,11 @@ local function CreateSpellbookButton(parent)
     end)
   end
 
-  -- Tooltip + icon-only highlight (both modes)
+-- Tooltip + icon-only highlight (both modes)
+-- IMPORTANT: HookScript stacks. Only add these once to avoid C stack overflow with ElvUI.
+if not b._ExpandedMicrobar_HoverHooksAdded then
+  b._ExpandedMicrobar_HoverHooksAdded = true
+
   b:HookScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText("Spellbook |cffffff00(P)|r", 1, 1, 1)
@@ -484,6 +488,8 @@ local function CreateSpellbookButton(parent)
     local hl = self._ExpandedMicrobar_IconHighlight
     if hl then hl:Hide() end
   end)
+end
+
 
   -- Click behavior:
   --   * If PlayerSpellsFrame is open and last mode is spellbook -> close it.
@@ -550,15 +556,42 @@ local function TryElvUISkinSpellbook(btn)
       or (1.05 / 12.125)
   end
 
-  if type(AB.HandleMicroButton) == "function" then
-    pcall(function() AB:HandleMicroButton(btn, ELVUI_BUTTON_NAME) end)
+  -- IMPORTANT: only skin (HookScript) once, ever.
+  if not btn._ExpandedMicrobar_ElvUISkinned then
+    btn._ExpandedMicrobar_ElvUISkinned = true
+    if type(AB.HandleMicroButton) == "function" then
+      pcall(function() AB:HandleMicroButton(btn, ELVUI_BUTTON_NAME) end)
+    end
   end
+
+  -- Safe to call multiple times
   if type(AB.UpdateMicroButtonTexture) == "function" then
     pcall(function() AB:UpdateMicroButtonTexture(ELVUI_BUTTON_NAME) end)
   end
 
-  -- Force our own icon overlay so we don't conflict with ElvUI micro-sheet coords.
+  -- Re-apply our overlay icon (idempotent in your code)
   ApplyElvUIOverlayIcon(btn)
+end
+
+local function EnsureSpellbookHoverHooks(btn)
+  if not btn or btn._ExpandedMicrobar_HoverHooksAdded then return end
+  btn._ExpandedMicrobar_HoverHooksAdded = true
+
+  btn:HookScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Spellbook |cffffff00(P)|r", 1, 1, 1)
+    GameTooltip:Show()
+
+    local anchor = self._ExpandedMicrobar_OverlayIcon or (self.GetNormalTexture and self:GetNormalTexture())
+    local hl = EnsureIconOnlyHighlight(self, anchor)
+    if hl then hl:Show() end
+  end)
+
+  btn:HookScript("OnLeave", function(self)
+    GameTooltip_Hide()
+    local hl = self._ExpandedMicrobar_IconHighlight
+    if hl then hl:Hide() end
+  end)
 end
 
 local function EnsureElvUISpellbookButton()
@@ -567,12 +600,16 @@ local function EnsureElvUISpellbookButton()
   local btn = CreateSpellbookButton(_G.ElvUI_MicroBar)
   InsertIntoMicroButtonsList()
 
+  -- Make sure hover hooks only get attached once.
+  EnsureSpellbookHoverHooks(btn)
+
   -- Skin now, then retry once after ElvUI finishes its own microbar update.
   TryElvUISkinSpellbook(btn)
   C_Timer.After(0.5, function()
     TryElvUISkinSpellbook(btn)
   end)
 end
+
 
 ----------------------------------------------------------------------
 -- Non-ElvUI: replacement bar + layout
